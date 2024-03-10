@@ -89,6 +89,9 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
             temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=5000)
         preds = model.generate(evidence_augmented_inputs, sampling_params)
 
+        print(evidence_augmented_inputs)
+        print('----------------------')
+
         relevance_score_dict = {}
         grd_score_dict = {}
         ut_score_dict = {}
@@ -103,6 +106,9 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
             relevance_score_dict.setdefault(p_idx, {})
             grd_score_dict.setdefault(p_idx, {})
             ut_score_dict.setdefault(p_idx, {})
+
+            print(pred_text)
+
             # Compute reward scores
             for tok, id in rel_tokens.items():
                 prob = pred_log_probs[0][id] if id in pred_log_probs[0] else -100
@@ -286,7 +292,8 @@ def main():
                         help="reward weight for overall completeness / utility.")
     parser.add_argument('--mode', type=str, help="mode to control retrieval.",
                         default="default", choices=['adaptive_retrieval', 'no_retrieval', 'always_retrieve'],)
-    parser.add_argument('--metric', type=str, help="metric to be used during evaluation")
+    parser.add_argument('--metric', type=str,
+                        help="metric to be used during evaluation")
     args = parser.parse_args()
     gpt = args.model_name
     input_path = args.input_file
@@ -312,7 +319,7 @@ def main():
     def generate(prompt, evidences, max_new_tokens):
         return call_model_rerank_w_scores_batch(prompt, evidences=evidences, model=model, max_new_tokens=max_new_tokens,
                                                 rel_tokens=rel_tokens, ret_tokens=ret_tokens, grd_tokens=grd_tokens, ut_tokens=ut_tokens,
-                                                threshold=args.threshold, max_depth=args.max_depth, use_seqscore=args.use_seqscore,
+                                                threshold=args.threshold, use_seqscore=args.use_seqscore,
                                                 w_rel=args.w_rel, w_sup=args.w_sup, w_use=args.w_use, mode=args.mode, closed=args.task in ["fever", "arc_c"])
 
     preds = []
@@ -369,3 +376,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# python3 run_long_form_static.py   --model_name selfrag/selfrag_llama2_7b   --ndocs 5 --max_new_tokens 300 --threshold 0.2   --use_grounding --use_utility --use_seqscore   --task asqa --input_file ../eval_data/asqa_eval_gtr_top100.json   --output_file temp --max_depth 7 --mode always_retrieve

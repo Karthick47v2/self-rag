@@ -17,9 +17,15 @@ def run_step_generation_batch(model, prompt, paragraphs,  max_new_tokens,
     else:
         aug_prompts = [prompt]
 
+    print('[PROMPT]', prompt)
+
+    print('[AUG]', aug_prompts[0])
+
     sampling_params = SamplingParams(
         temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=32000, )
     preds = model.generate(aug_prompts, sampling_params)
+
+    print('[OUTPUT]', preds[0].outputs[0].text, preds[0].outputs[0].logprobs)
 
     # compute the scores for each generation
     relevance_score_dict = {}
@@ -88,12 +94,12 @@ def run_step_generation_batch(model, prompt, paragraphs,  max_new_tokens,
             utility_score = 0.0
 
         if use_seqscore is True:
-            final_score =np.exp(seq_score) + w_rel * relevance_score + \
+            final_score = np.exp(seq_score) + w_rel * relevance_score + \
                 w_sup * ground_score + w_use * utility_score
         else:
             final_score = w_rel * relevance_score + \
                 w_sup * ground_score + w_use * utility_score
-            
+
         overall_scores[p_idx] = {"final_score": final_score,
                                  "relevance_score": relevance_score,
                                  "ground_score": ground_score,
@@ -174,6 +180,15 @@ def call_model_beam_batch(prompt, model, max_new_tokens=15, ctxs=None, query=Non
         preds = model.generate([prompt], sampling_params)
         pred_log_probs = preds[0].outputs[0].logprobs
         preds = [pred.outputs[0].text.split("\n\n")[0] for pred in preds]
+
+        # print('##############')
+
+        # print('[PROMP]', prompt)
+
+        # print('[ANS]', preds)
+
+        # print('##############')
+
         if "[Retrieval]" not in preds[0]:
             do_retrieve = False
         else:
@@ -216,6 +231,12 @@ def call_model_beam_batch(prompt, model, max_new_tokens=15, ctxs=None, query=Non
                     prompt = prediction_tree[node]["prompt"]
                     prev_generation = prediction_tree[node]["processed_pred"]
                     score = prediction_tree[node]["score"]
+
+                    # print('Prompt', prompt)
+
+                    # print('Prev', prev_generation)
+                    # print('Score', score)
+
                     if "[Retrieval]" in pred:
                         retrieval_results = {}
                         preds, scores, overall_score_dict = run_step_generation_batch(
@@ -319,7 +340,8 @@ def main():
                         default=None, help="Adaptive threshold.")
     parser.add_argument("--use_grounding", action="store_true",
                         help="use ground score")
-    parser.add_argument("--use_seqscore", action="store_true", help="use sequence scores.")
+    parser.add_argument("--use_seqscore", action="store_true",
+                        help="use sequence scores.")
     parser.add_argument(
         "--use_utility", action="store_true", help="tree search")
     parser.add_argument("--beam_width",  type=int,
@@ -359,7 +381,7 @@ def main():
             {"instruction": prompt})
         return call_model_beam_batch(processed_prompt, model=model, max_new_tokens=max_new_tokens, ctxs=ctxs, query=prompt,
                                      rel_tokens=rel_tokens, ret_tokens=ret_tokens, grd_tokens=grd_tokens, ut_tokens=ut_tokens,
-                                     use_seqscore=args.use_seqscore, threshold=args.threshold, 
+                                     use_seqscore=args.use_seqscore, threshold=args.threshold,
                                      beam_width=args.beam_width, max_depth=args.max_depth,
                                      w_rel=1.0, w_sup=1.0, w_use=0.5, mode=args.mode, ignore_cont=args.ignore_cont, )
 
@@ -376,8 +398,8 @@ def main():
             ctxs = item["ctxs"][:args.ndocs]
             result, intermediate = generate(prompt, ctxs, args.max_new_tokens,)
             postprocessed_result = fix_spacing(postprocess(result[0]))
-            new_results.append({"input": item["input"], "output": postprocessed_result, "topic": item["topic"],
-                                "cat": item["cat"], "intermediate": intermediate["original_splitted_sentences"][0]})
+            # new_results.append({"input": item["input"], "output": postprocessed_result, "topic": item["topic"],
+            #                     "cat": item["cat"], "intermediate": intermediate["original_splitted_sentences"][0]})
             if idx % 10 == 0:
                 with jsonlines.open(args.output_file + "_tmp", 'w') as writer:
                     writer.write_all(new_results)
@@ -398,6 +420,11 @@ def main():
             final_output = ""
             docs = []
             prev_gen = []
+
+            # print(final_pred)
+            # print('------')
+            # print(intermediate)
+
             if "splitted_sentences" not in intermediate:
                 item["output"] = postprocess(final_pred)
             else:
@@ -439,3 +466,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# python run_long_form_static.py   --model_name selfrag/selfrag_llama2_7b   --ndocs 5 --max_new_tokens 300 --threshold 0.2   --use_grounding --use_utility --use_seqscore   --task factscore --input_file ../eval_data/factscore_unlabeled_alpaca_13b_retrieval.jsonl   --output_file test --max_depth 7

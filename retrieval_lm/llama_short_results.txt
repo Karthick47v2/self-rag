@@ -1,0 +1,3 @@
+Time: 2986 seconds
+Final result: 0.5511079342387419
+Retrieval Frequencies: 174.875
