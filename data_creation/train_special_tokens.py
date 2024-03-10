@@ -70,9 +70,11 @@ class ModelArguments:
         },
     )
 
+
 @dataclass
 class DataArguments:
-    data_path: str = field(default=None, metadata={"help": "Path to the training data."})
+    data_path: str = field(default=None, metadata={
+                           "help": "Path to the training data."})
     separated: bool = field(
         default=False,
         metadata={
@@ -80,14 +82,17 @@ class DataArguments:
         },
     )
 
+
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     model_max_length: int = field(
         default=512,
-        metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
+        metadata={
+            "help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
+
 
 def _make_w_io_base(f, mode: str):
     if not isinstance(f, io.IOBase):
@@ -131,11 +136,13 @@ def jload(f, mode="r"):
     f.close()
     return jdict
 
+
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
     state_dict = trainer.model.state_dict()
     if trainer.args.should_save:
-        cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
+        cpu_state_dict = {key: value.cpu()
+                          for key, value in state_dict.items()}
         del state_dict
         trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
 
@@ -157,8 +164,10 @@ def smart_tokenizer_and_embedding_resize(
         input_embeddings = model.get_input_embeddings().weight.data
         output_embeddings = model.get_output_embeddings().weight.data
 
-        input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
-        output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+        input_embeddings_avg = input_embeddings[:-
+                                                num_new_tokens].mean(dim=0, keepdim=True)
+        output_embeddings_avg = output_embeddings[:-
+                                                  num_new_tokens].mean(dim=0, keepdim=True)
 
         input_embeddings[-num_new_tokens:] = input_embeddings_avg
         output_embeddings[-num_new_tokens:] = output_embeddings_avg
@@ -176,7 +185,8 @@ def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedToken
         )
         for text in strings
     ]
-    input_ids = labels = [tokenized.input_ids[0] for tokenized in tokenized_list]
+    input_ids = labels = [tokenized.input_ids[0]
+                          for tokenized in tokenized_list]
     input_ids_lens = labels_lens = [
         tokenized.input_ids.ne(tokenizer.pad_token_id).sum().item() for tokenized in tokenized_list
     ]
@@ -192,17 +202,18 @@ def preprocess(
     sources: Sequence[str],
     targets: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
-    skip_tokens:Sequence[int],
+    skip_tokens: Sequence[int],
     context_markups: Sequence[int],
 ) -> Dict:
     """Preprocess the data by tokenizing."""
     examples = [s + t for s, t in zip(sources, targets)]
-    examples_tokenized, sources_tokenized = [_tokenize_fn(strings, tokenizer) for strings in (examples, sources)]
+    examples_tokenized, sources_tokenized = [_tokenize_fn(
+        strings, tokenizer) for strings in (examples, sources)]
     input_ids = examples_tokenized["input_ids"]
     labels = copy.deepcopy(input_ids)
     for label, source_len in zip(labels, sources_tokenized["input_ids_lens"]):
         label[:source_len] = IGNORE_INDEX
-    
+
     # special token mask
     if skip_tokens is not None:
         for i, input_id_list in enumerate(input_ids):
@@ -224,6 +235,7 @@ def preprocess(
                     context_start = False
     return dict(input_ids=input_ids, labels=labels)
 
+
 class SupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
@@ -233,16 +245,19 @@ class SupervisedDataset(Dataset):
         list_data_dict = jload(data_path)
 
         logging.warning("Formatting inputs...")
-        prompt_input, prompt_no_input, prompt_no_input_paragraph, prompt_no_input_separated = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"], PROMPT_DICT["prompt_no_input_paragraph"], PROMPT_DICT["prompt_no_input_separated"]
+        prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"]
         sources = [
-            prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
+            prompt_input.format_map(example) if example.get(
+                "input", "") != "" else prompt_no_input.format_map(example)
             for example in list_data_dict
         ]
-        targets = [f"{example['output']}{tokenizer.eos_token}" for example in list_data_dict]
+        targets = [
+            f"{example['output']}{tokenizer.eos_token}" for example in list_data_dict]
 
         logging.warning("Tokenizing inputs... This may take some time...")
 
-        data_dict = preprocess(sources, targets, tokenizer, skip_tokens, context_markups=context_markups)
+        data_dict = preprocess(sources, targets, tokenizer,
+                               skip_tokens, context_markups=context_markups)
 
         self.input_ids = data_dict["input_ids"]
         self.labels = data_dict["labels"]
@@ -261,11 +276,13 @@ class DataCollatorForSupervisedDataset(object):
     tokenizer: transformers.PreTrainedTokenizer
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+        input_ids, labels = tuple(
+            [instance[key] for instance in instances] for key in ("input_ids", "labels"))
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
         )
-        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
+        labels = torch.nn.utils.rnn.pad_sequence(
+            labels, batch_first=True, padding_value=IGNORE_INDEX)
         return dict(
             input_ids=input_ids,
             labels=labels,
@@ -275,13 +292,15 @@ class DataCollatorForSupervisedDataset(object):
 
 def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, skip_tokens=None, context_markups=None) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = SupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path, skip_tokens=skip_tokens, context_markups=context_markups, separated=data_args.separated)
+    train_dataset = SupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path,
+                                      skip_tokens=skip_tokens, context_markups=context_markups, separated=data_args.separated)
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
 
 
 def train():
-    parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
+    parser = transformers.HfArgumentParser(
+        (ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     if model_args.use_flash_attn:
         replace_llama_attn_with_flash_attn()
@@ -309,7 +328,8 @@ def train():
 
     # add special tokens
     if model_args.use_special_token is True:
-        special_token_dict = {"additional_special_tokens": ["[No Retrieval]", "[Retrieval]", "[Continue to Use Evidence]", "[Irrelevant]", "[Relevant]", "<paragraph>", "</paragraph>", "[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]", "[Fully supported]", "[Partially supported]", "[No support / Contradictory]"]}
+        special_token_dict = {"additional_special_tokens": ["[No Retrieval]", "[Retrieval]", "[Continue to Use Evidence]", "[Irrelevant]", "[Relevant]", "<paragraph>",
+                                                            "</paragraph>", "[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]", "[Fully supported]", "[Partially supported]", "[No support / Contradictory]"]}
         if tokenizer.pad_token is None:
             special_token_dict["pad_token"] = DEFAULT_PAD_TOKEN
         smart_tokenizer_and_embedding_resize(
@@ -317,7 +337,7 @@ def train():
             tokenizer=tokenizer,
             model=model,
         )
-    
+
     else:
         if tokenizer.pad_token is None:
             smart_tokenizer_and_embedding_resize(
@@ -339,16 +359,21 @@ def train():
                     skip_tokens.append(tokenizer.convert_tokens_to_ids(token))
             else:
                 skip_tokens = None
-            data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args, skip_tokens=skip_tokens, context_markups=context_markups)
+            data_module = make_supervised_data_module(
+                tokenizer=tokenizer, data_args=data_args, skip_tokens=skip_tokens, context_markups=context_markups)
         else:
-            data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+            data_module = make_supervised_data_module(
+                tokenizer=tokenizer, data_args=data_args)
     else:
-        data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+        data_module = make_supervised_data_module(
+            tokenizer=tokenizer, data_args=data_args)
 
-    trainer = Trainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+    trainer = Trainer(model=model, tokenizer=tokenizer,
+                      args=training_args, **data_module)
     trainer.train()
     trainer.save_state()
-    safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
+    safe_save_model_for_hf_trainer(
+        trainer=trainer, output_dir=training_args.output_dir)
 
 
 if __name__ == "__main__":
