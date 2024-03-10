@@ -2,6 +2,9 @@
 # Please first check nvcc version and 
 # make sure it satisfies the vLLM's 
 # requirements.
+wheel
+packaging
+torch
 vllm==0.2.6
 tqdm
 spacy

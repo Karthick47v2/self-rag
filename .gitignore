@@ -1,4 +1,5 @@
 venv/
 roberta_model/
-
+.cache/
+__pycache__/
 *.json*
