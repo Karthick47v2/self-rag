@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: UTF-8 -*-
 
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, RobertaTokenizerFast, AutoConfig, RobertaForSequenceClassification
 from vllm import LLM, SamplingParams
 import random
 import torch
@@ -11,7 +11,7 @@ import json
 import argparse
 from tqdm import tqdm
 import time
-from utils import PROMPT_DICT, TASK_INST, load_jsonlines, control_tokens, load_special_tokens
+from utils import PROMPT_DICT, TASK_INST, load_jsonlines, control_tokens, load_special_tokens, LM_PROMPT_DICT
 from metrics import match, accuracy
 
 
@@ -22,6 +22,8 @@ random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)
+
+lm_device = 'cuda:1'
 
 
 def postprocess_answer_option_conditioned(answer):
@@ -42,16 +44,15 @@ def postprocess_answer_option_conditioned(answer):
 def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15,
                                      ret_tokens=None, rel_tokens=None, grd_tokens=None, ut_tokens=None,
                                      use_seqscore=False, threshold=0.5,
-                                     w_rel=1.0, w_sup=1.0, w_use=0.5, mode="adaptive_retrieval", closed=False):
+                                     w_rel=1.0, w_sup=1.0, w_use=0.5, mode="adaptive_retrieval", closed=False, lm_model=None, lm_tokenizer=None, raw_prompt=None):
     results = {}
     if mode != "always_retrieve":
-        sampling_params = SamplingParams(
-            temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=32016)
-        preds = model.generate([prompt], sampling_params)
-        pred_token_ids = preds[0].outputs[0].token_ids
-        pred_text = preds[0].outputs[0].text
-        pred_log_probs = preds[0].outputs[0].logprobs
-        results["no_retrieval"] = pred_text
+        inputs = lm_tokenizer(raw_prompt, return_tensors="pt",
+                              padding=True, truncation=True, max_length=512).to(lm_device)
+
+        outputs = lm_model(**inputs)
+
+        probs = torch.softmax(outputs.logits[0], dim=-1)
 
     # save relevance token scores
     if mode == "always_retrieve":
@@ -62,100 +63,58 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
 
     else:
         if threshold is not None:
-            score_dict = {}
-            for tok, id in ret_tokens.items():
-                if id not in pred_log_probs[0]:
-                    score_dict[tok] = -100
-                prob = pred_log_probs[0][id]
-                score_dict[tok] = float(prob)
-            do_retrieve = score_dict["[Retrieval]"] / (
-                score_dict["[Retrieval]"] + score_dict["[No Retrieval]"]) > threshold
+            do_retrieve = (probs[1] / (
+                probs[1] + probs[0]) > threshold).item()
+
         else:
-            do_retrieve = "[Retrieval]" in pred
+            do_retrieve = (torch.argmax(probs).item() == 1).item()
+        do_retrieve = True
 
     if do_retrieve is True:
-        evidence_augmented_inputs = [prompt + "[Retrieval]<paragraph>{0}\n{1}</paragraph>".format(
+
+        evidence_augmented_inputs = [raw_prompt + "\nEvidence: {0}\n{1}".format(
             para["title"], para["text"]) for para in evidences]
-        sampling_params = SamplingParams(
-            temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=5000)
-        preds = model.generate(evidence_augmented_inputs, sampling_params)
 
-        relevance_score_dict = {}
-        grd_score_dict = {}
-        ut_score_dict = {}
+        inputs = lm_tokenizer(evidence_augmented_inputs, return_tensors="pt",
+                              padding=True, truncation=True, max_length=512).to(lm_device)
+        outputs = lm_model(**inputs)
+
+        probs = torch.softmax(outputs.logits, dim=-1)
+        # relevance_score_dict = {}
+        # grd_score_dict = {}
+        # ut_score_dict = {}
         overall_scores = {}
-        for p_idx, pred in enumerate(preds):
-            pred_token_ids = pred.outputs[0].token_ids
-            pred_text = pred.outputs[0].text
-            pred_log_probs = pred.outputs[0].logprobs
-            seq_score = pred.outputs[0].cumulative_logprob / \
-                max(len(pred.outputs[0].token_ids), 1)
 
-            relevance_score_dict.setdefault(p_idx, {})
-            grd_score_dict.setdefault(p_idx, {})
-            ut_score_dict.setdefault(p_idx, {})
+        ut_scores_normalized = [-1, -0.5, 0, 0.5, 1]
+        for p_idx, prob in enumerate(probs):
 
-            for tok, id in rel_tokens.items():
-                prob = pred_log_probs[0][id] if id in pred_log_probs[0] else -100
-                relevance_score_dict[p_idx][tok] = np.exp(float(prob))
+            relevance_scores_lst = prob[3:5].tolist()
+            grd_scores_lst = prob[10:13].tolist()
+            ut_scores_lst = prob[5:10].tolist()
 
-            if grd_tokens is not None:
-                groundness_token_appear_indices = []
-                for tok_idx, tok in enumerate(pred_token_ids):
-                    if tok in list(grd_tokens.values()):
-                        groundness_token_appear_indices.append(tok_idx)
-                        break
-                if len(groundness_token_appear_indices) > 0:
-                    idx = groundness_token_appear_indices[0]
-                    for token, token_id in grd_tokens.items():
-                        prob = pred_log_probs[idx][token_id] if token_id in pred_log_probs[idx] else -100
-                        grd_score_dict[p_idx][token] = np.exp(float(prob))
+            relevance_score = relevance_scores_lst[1] / \
+                sum(relevance_scores_lst)
 
-            if ut_tokens is not None:
-                utility_token_appear_indices = []
-                for tok_idx, tok in enumerate(pred_token_ids):
-                    if tok in list(ut_tokens.values()):
-                        utility_token_appear_indices.append(tok_idx)
-                if len(utility_token_appear_indices) > 0:
-                    idx = utility_token_appear_indices[0]
-                    for token, token_id in ut_tokens.items():
-                        prob = pred_log_probs[idx][token_id] if token_id in pred_log_probs[idx] else -100
-                        ut_score_dict[p_idx][token] = np.exp(float(prob))
+            ground_score = (grd_scores_lst[0] / sum(grd_scores_lst)) + 0.5 * (
+                grd_scores_lst[1] / sum(grd_scores_lst[:2]))
 
-            relevance_score = relevance_score_dict[p_idx]["[Relevant]"] / (
-                np.sum(list(relevance_score_dict[p_idx].values())))
+            ut_sum = sum(ut_scores_lst)
+            utility_score = sum(
+                score * (prob / ut_sum) for score, prob in zip(ut_scores_normalized, ut_scores_lst))
 
-            if len(grd_score_dict[p_idx]) == 3:
-                gt_sum = np.sum(list(grd_score_dict[p_idx].values()))
-                ground_score = (grd_score_dict[p_idx]["[Fully supported]"] / gt_sum) + 0.5 * (
-                    grd_score_dict[p_idx]["[Partially supported]"] / gt_sum)
-            else:
-                ground_score = 0.0
 
-            if len(ut_score_dict[p_idx]) == 5:
-                ut_sum = np.sum(list(ut_score_dict[p_idx].values()))
-                ut_scores = [-1, -0.5, 0, 0.5, 1]
-                utility_score = np.sum(
-                    [ut_scores[i] * (ut_score_dict[p_idx]["[Utility:{}]".format(i+1)] / ut_sum) for i in range(len(ut_scores))])
-            else:
-                utility_score = 0.0
-
-            if use_seqscore is True:
-                final_score = np.exp(seq_score) + w_rel * relevance_score + \
-                    w_sup * ground_score + w_use * utility_score
-            else:
-                final_score = w_rel * relevance_score + \
-                    w_sup * ground_score + w_use * utility_score
+            final_score = w_rel * relevance_score + \
+                w_sup * ground_score + w_use * utility_score
 
             overall_scores[p_idx] = {"final_score": final_score,
                                      "relevance_score": relevance_score,
                                      "ground_score": ground_score,
                                      "utility_score": utility_score,
-                                     "relevance_score_dict": relevance_score_dict,
-                                     "grd_score_dict": grd_score_dict,
-                                     "ut_score_dict": utility_score}
-            results["retrieval_{}".format(p_idx)] = {
-                "pred": pred_text, "score": final_score, "ctx": evidences[p_idx]}
+                                     #  "relevance_score_dict": relevance_score_dict,
+                                     #  "grd_score_dict": grd_score_dict,
+                                     #  "ut_score_dict": utility_score
+                                     }
+            results[p_idx] = final_score
 
     else:
         sampling_params = SamplingParams(
@@ -166,28 +125,33 @@ def call_model_rerank_w_scores_batch(prompt, evidences, model, max_new_tokens=15
         pred = preds[0].outputs[0].text
 
     # Aggregating answers
-    if len(results) == 1:
+    if not do_retrieve:
         postprocessed_pred = postprocess_answer_option_conditioned(pred)
         return postprocessed_pred, results, do_retrieve
     else:
         answer2score = {}
-        if closed is True:
-            for key, result in results.items():
-                if key == "no_retrieval":
-                    continue
-                answer = postprocess_answer_option_conditioned(result["pred"])
-                score = result["score"]
-                answer2score.setdefault(answer, 0)
-                answer2score[answer] += score
-            sorted_answers = sorted(
-                answer2score.items(), key=lambda x: x[1], reverse=True)
-            best_option = sorted_answers[0][0]
-        else:
-            path2score = {key: item["score"] for key,
-                          item in results.items() if key != "no_retrieval"}
-            best_path = sorted(path2score.items(),
+        # if closed is True:
+        #     for key, result in results.items():
+        #         if key == "no_retrieval":
+        #             continue
+        #         answer = postprocess_answer_option_conditioned(result["pred"])
+        #         score = result["score"]
+        #         answer2score.setdefault(answer, 0)
+        #         answer2score[answer] += score
+        #     sorted_answers = sorted(
+        #         answer2score.items(), key=lambda x: x[1], reverse=True)
+        #     best_option = sorted_answers[0][0]
+        # else:
+        if True:
+            best_path = sorted(results.items(),
                                key=lambda x: x[1], reverse=True)[0][0]
-            best_option = results[best_path]["pred"]
+
+            sampling_params = SamplingParams(
+                temperature=0.0, top_p=1.0, max_tokens=max_new_tokens, logprobs=5000)
+            preds = model.generate([prompt + "[Retrieval]<paragraph>{0}\n{1}</paragraph>".format(
+                evidences[best_path]["title"], evidences[best_path]["text"])], sampling_params)
+
+            best_option = preds[0].outputs[0].text
         return best_option, results, do_retrieve
 
 
@@ -204,6 +168,7 @@ def preprocess_input_data(dataset, task=None):
         instruction = TASK_INST[task]
     else:
         instruction = None
+
     for item in dataset:
         if task == "arc_c":
             choices = item["choices"]
@@ -289,23 +254,35 @@ def main():
 
     input_data = preprocess_input_data(
         input_data, task=args.task)
+
+    print(len(input_data))
+
+    model_id = 'roberta-base'
+
+    id2label = {i: label for i, label in enumerate(["[No Retrieval]", "[Retrieval]", "[Continue to Use Evidence]", "[Irrelevant]", "[Relevant]",
+                                                    "[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]", "[Fully supported]", "[Partially supported]", "[No support / Contradictory]"])}
+    config = AutoConfig.from_pretrained(model_id)
+    config.update({"id2label": id2label})
+
+    lm_tokenizer = RobertaTokenizerFast.from_pretrained(model_id)
     tokenizer = AutoTokenizer.from_pretrained(gpt, padding_side="left")
-    if args.dtype is not None:
-        model = LLM(model=gpt, download_dir=args.download_dir,
-                    dtype=args.dtype, tensor_parallel_size=args.world_size,)
-    else:
-        model = LLM(model=gpt, download_dir=args.download_dir,
-                    dtype=args.dtype, tensor_parallel_size=args.world_size,)
+
+    model = LLM(model=gpt, download_dir=args.download_dir,
+                dtype=args.dtype, tensor_parallel_size=args.world_size,)
+    lm_model = RobertaForSequenceClassification.from_pretrained(
+        '../data_creation/roberta_model/checkpoint-13200', config=config)
+    lm_model.to(lm_device)
+    lm_model.eval()
 
     # Get token ids for reflection tokens.
     ret_tokens, rel_tokens, grd_tokens, ut_tokens = load_special_tokens(
         tokenizer, use_grounding=args.use_groundness, use_utility=args.use_utility)
 
-    def generate(prompt, evidences, max_new_tokens):
+    def generate(prompt, evidences, max_new_tokens, raw_prompt):
         return call_model_rerank_w_scores_batch(prompt, evidences=evidences, model=model, max_new_tokens=max_new_tokens,
                                                 rel_tokens=rel_tokens, ret_tokens=ret_tokens, grd_tokens=grd_tokens, ut_tokens=ut_tokens,
                                                 threshold=args.threshold, use_seqscore=args.use_seqscore,
-                                                w_rel=args.w_rel, w_sup=args.w_sup, w_use=args.w_use, mode=args.mode, closed=args.task in ["fever", "arc_c"])
+                                                w_rel=args.w_rel, w_sup=args.w_sup, w_use=args.w_use, mode=args.mode, closed=args.task in ["fever", "arc_c"], lm_model=lm_model, lm_tokenizer=lm_tokenizer, raw_prompt=raw_prompt)
 
     preds = []
     prompts = []
@@ -318,10 +295,13 @@ def main():
     for i, row in tqdm(enumerate(input_data)):
         results = {}
         prompt = PROMPT_DICT["prompt_no_input"].format_map(row)
+        raw_prompt = LM_PROMPT_DICT["prompt_no_input"].format_map(row)
+
         _, evidences = process_data_evidences(row, top_n=args.ndocs)
 
         pred, results, do_retrieve = generate(
-            prompt, evidences, max_new_tokens=args.max_new_tokens,)
+            prompt, evidences, max_new_tokens=args.max_new_tokens, raw_prompt=raw_prompt)
+
         if type(pred) is str and pred[0] == "#" or pred[0] == ":":
             pred = pred[1:]
         prompts.append(prompt)
@@ -366,7 +346,7 @@ if __name__ == "__main__":
     main()
 
 
-# python3 run_short_form.py --model_name selfrag/selfrag_llama2_7b --input_file ../eval_data/popqa_longtail_w_gs.jsonl --mode adaptive_retrieval --max_new_tokens 100 --threshold 0.2 --output_file temp --metric match --ndocs 10 --use_groundness --use_utility --use_seqscore --dtype half
-# python3 run_short_form.py --model_name selfrag/selfrag_llama2_7b --input_file ../eval_data/triviaqa_test_w_gs.jsonl --mode adaptive_retrieval --max_new_tokens 100 --threshold 0.2 --output_file temp --metric match --ndocs 10 --use_groundness --use_utility --use_seqscore --dtype half
-# python3 run_short_form.py --model_name selfrag/selfrag_llama2_7b --input_file ../eval_data/health_claims_processed.jsonl --mode adaptive_retrieval --max_new_tokens 50 --threshold 0.2 --output_file temp --metric match --ndocs 5 --use_groundness --use_utility --use_seqscore --dtype half --task fever
-# python3 run_short_form.py --model_name selfrag/selfrag_llama2_7b --input_file ../eval_data/arc_challenge_processed.jsonl --mode adaptive_retrieval --max_new_tokens 50 --threshold 0.2 --output_file temp --metric match --ndocs 5 --use_groundness --use_utility --use_seqscore --dtype half --task arc_c
+# python3 run_short_form_lm.py --model_name selfrag/selfrag_llama2_7b --input_file ../eval_data/popqa_longtail_w_gs.jsonl --mode adaptive_retrieval --max_new_tokens 100 --threshold 0.2 --output_file temp --metric match --ndocs 10 --use_groundness --use_utility --use_seqscore --dtype half
+# python3 run_short_form_lm.py --model_name selfrag/selfrag_llama2_7b --input_file ../eval_data/triviaqa_test_w_gs.jsonl --mode adaptive_retrieval --max_new_tokens 100 --threshold 0.2 --output_file temp --metric match --ndocs 10 --use_groundness --use_utility --use_seqscore --dtype half
+# python3 run_short_form_lm.py --model_name selfrag/selfrag_llama2_7b --input_file ../eval_data/health_claims_processed.jsonl --mode adaptive_retrieval --max_new_tokens 50 --threshold 0.2 --output_file temp --metric match --ndocs 5 --use_groundness --use_utility --use_seqscore --dtype half --task fever
+# python3 run_short_form_lm.py --model_name selfrag/selfrag_llama2_7b --input_file ../eval_data/arc_challenge_processed.jsonl --mode adaptive_retrieval --max_new_tokens 50 --threshold 0.2 --output_file temp --metric match --ndocs 5 --use_groundness --use_utility --use_seqscore --dtype half --task arc_c

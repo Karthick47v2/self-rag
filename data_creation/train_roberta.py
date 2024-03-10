@@ -224,8 +224,9 @@ def train():
 
         predicted_class_index = torch.argmax(outputs.logits).item()
 
-        if id2label[predicted_class_index] != target:
-            print("Predicted labels:",
+        # if id2label[predicted_class_index] != target:
+        print(input)
+        print("Predicted labels:",
                   id2label[predicted_class_index], "Original label:", target)
 
 

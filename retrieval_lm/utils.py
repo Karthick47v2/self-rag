@@ -31,6 +31,18 @@ PROMPT_DICT = {
     ),
 }
 
+LM_PROMPT_DICT = {
+    # "prompt_input": (
+    #     "Input:\n{input}"
+    # ),
+    # "prompt_no_input": (
+    #     "{instruction}"
+    # ),
+    "prompt_no_input": (
+        "Input:\nTask instruction: {instruction}"
+    ),
+}
+
 TASK_INST = {"wow": "Given a chat history separated by new lines, generates an informative, knowledgeable and engaging response. ",
              "fever": "Is the following statement correct or not? Say true if it's correct; otherwise say false.",
              "eli5": "Provide a paragraph-length response using simple words to answer the following question.",
@@ -171,6 +183,7 @@ def postprocess_output(input_instance, prediction, task, intermediate_results=No
         input_instance["docs"] = docs
         return input_instance
 
+
 def process_arc_instruction(item, instruction):
     choices = item["choices"]
     answer_labels = {}
@@ -190,10 +203,12 @@ def process_arc_instruction(item, instruction):
 
     if "D" not in answer_labels:
         answer_labels["D"] = ""
-    choices = "\nA: {0}\nB: {1}\nC: {2}\nD: {3}".format(answer_labels["A"], answer_labels["B"], answer_labels["C"], answer_labels["D"])
+    choices = "\nA: {0}\nB: {1}\nC: {2}\nD: {3}".format(
+        answer_labels["A"], answer_labels["B"], answer_labels["C"], answer_labels["D"])
     if "E" in answer_labels:
         choices += "\nE: {}".format(answer_labels["E"])
-    processed_instruction = instruction + "\n\n### Input:\n" + item["instruction"] + choices
+    processed_instruction = instruction + \
+        "\n\n### Input:\n" + item["instruction"] + choices
     return processed_instruction
 
 

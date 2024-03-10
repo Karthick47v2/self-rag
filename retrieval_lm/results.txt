@@ -1,0 +1,40 @@
+# Roberta
+- PopQA  1399
+Final result: 0.4353109363831308
+Retrieval Frequencies: 1.0
+TIME: 810.4697442054749
+
+- TQA 7313
+Final result: 0.6091891152741693
+Retrieval Frequencies: 1.0
+TIME: 5174.956400156021
+
+- Pub 987
+Final result: 0.7092198581560284
+Retrieval Frequencies: 1.0
+TIME: 155.6783528327942
+
+- ARC 1172
+Final result: 0.6655290102389079
+Retrieval Frequencies: 1.0
+TIME: 206.32209157943726
+
+# Self-RAG
+- PopQA 1399
+Final result: 0.5511079342387419
+Retrieval Frequencies: 1.0
+TIME: 1780.4326782226562
+
+- TQA 7313
+2882 - 2:10:09
+average: 0.676501214855952
+
+- Pub 987
+Final result: 0.7193515704154002
+Retrieval Frequencies: 1.0
+TIME: 369.87692284584045
+
+- ARC 1172
+Final result: 0.6723549488054608
+Retrieval Frequencies: 1.0
+TIME: 487.1454246044159
